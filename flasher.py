@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Мастер прошивки адаптера постоянного тока (DC АДАПТЕР, метка QD в эфире).
 
+Порт на Linux исходной версии для macOS (OllyCat/gbt-p6-flasher).
 Ведёт человека по шагам и на каждом спрашивает согласие. Сам ничего не трогает,
-пока не ответишь «да». Работает на обычном питоне из macOS, сторонних библиотек
-не требует: всё, что нужно для Bluetooth, ставит себе в отдельную папку рядом.
+пока не ответишь «да». Сторонних библиотек в системе не требует: всё, что
+нужно для Bluetooth, ставит себе в отдельную папку рядом.
 
-Запускать удобнее двойным щелчком по «Прошивальщик.command».
+Запуск:  ./run.sh   или   python3 flasher.py
 """
 import os
-import plistlib
 import shutil
 import subprocess
 import sys
@@ -16,7 +16,6 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VENV = os.path.join(HERE, ".venv")
-APP = os.path.join(HERE, "BLEBridge.app")
 WORKER = os.path.join(HERE, "ble_worker.py")
 LOG = os.path.join(HERE, "worker_log.txt")
 FIRMWARE = os.path.join(HERE, "firmware")
@@ -28,27 +27,21 @@ RED = "\033[31m"
 YELLOW = "\033[33m"
 OFF = "\033[0m"
 
-
 def title(text):
     print(f"\n{B}{text}{OFF}")
     print(DIM + "─" * min(len(text), 70) + OFF)
 
-
 def info(text=""):
     print(text)
-
 
 def warn(text):
     print(f"{YELLOW}{text}{OFF}")
 
-
 def fail(text):
     print(f"\n{RED}{text}{OFF}")
 
-
 def ok(text):
     print(f"{GREEN}{text}{OFF}")
-
 
 def ask(question, default_yes=True):
     hint = "Д/н" if default_yes else "д/Н"
@@ -60,12 +53,11 @@ def ask(question, default_yes=True):
             bye("Отменено.")
         if not a:
             return default_yes
-        if a in ("д", "да", "y", "yes", "l"):      # «l» — «д» в латинской раскладке
+        if a in ("д", "да", "y", "yes", "l"):  # «l» — «д» в латинской раскладке
             return True
         if a in ("н", "нет", "n", "no", "y."):
             return False
         info("Ответьте «д» или «н».")
-
 
 def choose(question, options):
     """options — список (подпись, значение)."""
@@ -82,7 +74,6 @@ def choose(question, options):
             return options[int(a) - 1][1]
         info("Введите номер из списка.")
 
-
 def bye(text, code=0):
     print(f"\n{text}\n")
     try:
@@ -91,16 +82,16 @@ def bye(text, code=0):
         print()
     sys.exit(code)
 
-
 # ── подготовка окружения ────────────────────────────────────────────────────
 
 def venv_python():
     return os.path.join(VENV, "bin", "python3")
 
-
 def prepare():
-    """Ставит bleak в свою папку и собирает .app-обёртку вокруг питона."""
-    if os.path.exists(APP) and os.path.exists(venv_python()):
+    """Ставит bleak в свою папку. В отличие от macOS, на Linux не нужно
+    собирать приложение-обёртку: к радио пускает BlueZ через D-Bus,
+    а не система разрешений с вопросами про Bluetooth."""
+    if os.path.exists(venv_python()):
         return True
 
     title("Шаг 1. Разовая подготовка")
@@ -108,22 +99,30 @@ def prepare():
     info("всё — внутри этой папки, система не затрагивается:")
     info()
     info("  • рядом появится папка .venv — отдельный питон для этой задачи;")
-    info("  • в неё загрузится библиотека bleak (работа с Bluetooth), нужен интернет;")
-    info("  • соберётся BLEBridge.app — обёртка, без которой macOS не пустит к")
-    info("    Bluetooth. Внутри тот же питон, просто в правильной упаковке.")
+    info("  • в неё загрузится библиотека bleak (работа с Bluetooth), нужен интернет.")
     info()
     info("Занимает меньше минуты. Повторно это не понадобится.")
     if not ask("Продолжаем?"):
         bye("Хорошо, ничего не делаю.")
 
+    if shutil.which("bluetoothctl") is None:
+        fail("В системе нет пакета BlueZ — именно с ним работает Bluetooth.")
+        info("Поставьте его одной командой и запустите программу снова:")
+        info("    Debian/Ubuntu:  sudo apt install bluez")
+        info("    Fedora:         sudo dnf install bluez")
+        info("    Arch:           sudo pacman -S bluez bluez-utils")
+        return False
+
     info("\nГотовлю питон…")
-    if not os.path.exists(venv_python()):
-        r = subprocess.run([sys.executable, "-m", "venv", VENV],
-                           capture_output=True, text=True)
-        if r.returncode:
-            fail("Не удалось создать окружение питона.")
-            info(r.stderr.strip()[:500])
-            return False
+    r = subprocess.run([sys.executable, "-m", "venv", VENV],
+                       capture_output=True, text=True)
+    if r.returncode:
+        fail("Не удалось создать окружение питона.")
+        if "venv" in r.stderr or "ensurepip" in r.stderr:
+            info("На Debian/Ubuntu модуль venv ставится отдельным пакетом:")
+            info("    sudo apt install python3-venv")
+        info(r.stderr.strip()[:500])
+        return False
 
     info("Загружаю библиотеку Bluetooth…")
     r = subprocess.run([venv_python(), "-m", "pip", "install", "-q",
@@ -134,90 +133,40 @@ def prepare():
         info("Обычно это значит, что нет интернета. Подключитесь и запустите снова.")
         info(DIM + r.stderr.strip()[-400:] + OFF)
         return False
-
-    info("Собираю обёртку для доступа к Bluetooth…")
-    if not build_app():
-        return False
     ok("Подготовка закончена.")
     return True
-
-
-def build_app():
-    """Минимальный .app вокруг питона: без него macOS убивает процесс, который
-    трогает Bluetooth (в Info.plist нужен ключ NSBluetoothAlwaysUsageDescription)."""
-    q = subprocess.run([venv_python(), "-c",
-                        "import sys, os; print(os.path.realpath(sys.executable)); "
-                        "print(sys.base_prefix); "
-                        "print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
-                       capture_output=True, text=True)
-    if q.returncode:
-        fail("Не смог расспросить питон о самом себе.")
-        return False
-    real_python, base_prefix, version = q.stdout.split()
-
-    shutil.rmtree(APP, ignore_errors=True)
-    macos = os.path.join(APP, "Contents", "MacOS")
-    lib = os.path.join(APP, "Contents", "lib")
-    os.makedirs(macos)
-    os.makedirs(lib)
-    shutil.copy2(real_python, os.path.join(macos, "python3"))
-
-    # Contents/ становится корнем окружения — тогда питон сам находит и свою
-    # библиотеку, и bleak, без переменных среды.
-    with open(os.path.join(APP, "Contents", "pyvenv.cfg"), "w") as f:
-        f.write(f"home = {base_prefix}/bin\n"
-                f"include-system-site-packages = false\n"
-                f"version = {version}\n")
-    os.symlink(f"../../../.venv/lib/python{version}",
-               os.path.join(lib, f"python{version}"))
-
-    reason = "Обновление прошивки адаптера по Bluetooth."
-    with open(os.path.join(APP, "Contents", "Info.plist"), "wb") as f:
-        plistlib.dump({
-            "CFBundleName": "BLEBridge",
-            "CFBundleDisplayName": "Мост Bluetooth",
-            "CFBundleIdentifier": "ru.demyanov.dcadapter.blebridge",
-            "CFBundleExecutable": "python3",
-            "CFBundlePackageType": "APPL",
-            "CFBundleVersion": "1.0",
-            "NSBluetoothAlwaysUsageDescription": reason,
-            "NSBluetoothPeripheralUsageDescription": reason,
-        }, f)
-
-    r = subprocess.run(["codesign", "--force", "--deep", "-s", "-", APP],
-                       capture_output=True, text=True)
-    if r.returncode:
-        fail("Не удалось подписать обёртку.")
-        info(r.stderr.strip()[:400])
-        return False
-    return True
-
 
 # ── запуск Bluetooth-части ──────────────────────────────────────────────────
 
 def worker_alive():
     # Через ps, а не pgrep: pgrep -f не находит процесс, если в пути к нему
-    # есть кириллица, и молча отвечает «нет такого».
-    out = subprocess.run(["ps", "-Ao", "command"],
+    # есть кириллица, и молча отвечает «нет такого». У ps на Linux другие
+    # ключи, чем на macOS: «-eo args» вместо «-Ao command».
+    out = subprocess.run(["ps", "-eo", "args"],
                          capture_output=True, text=True, errors="replace").stdout
-    return "BLEBridge.app/Contents/MacOS/python3" in out
-
+    return "ble_worker.py" in out
 
 def run_worker(args, timeout, quiet=False):
-    """Запускает ble_worker.py внутри обёртки и показывает его вывод живьём.
+    """Запускает ble_worker.py в питоне из .venv и показывает его вывод живьём.
 
     Вернёт список строк-меток. Кроме ##FOUND / ##DONE / ##FAIL от самого
     работника, может добавить ##DIED — это когда процесс исчез, ничего не
-    сказав. На практике так бывает ровно в одном случае: macOS показала вопрос
-    про Bluetooth и на время вопроса убила процесс.
+    сказав (на Linux так бывает, если упал BlueZ или адаптер отключился).
+
+    На macOS здесь был «open -n -a BLEBridge.app --args …»: без приложения-
+    обёртки система убивала процесс, тронувший Bluetooth. На Linux работник —
+    обычный фоновый процесс, запускается напрямую.
     """
     if os.path.exists(LOG):
         os.remove(LOG)
-    subprocess.run(["open", "-n", "-a", APP, "--args", WORKER, *args], check=True)
+    subprocess.Popen([venv_python(), WORKER, *args],
+                     stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL,
+                     start_new_session=True)
 
     markers, pos = [], 0
     deadline = time.time() + timeout
-    grace = time.time() + 6          # столько ждём, пока процесс вообще заведётся
+    grace = time.time() + 6  # столько ждём, пока процесс вообще заведётся
 
     def drain():
         nonlocal pos
@@ -233,7 +182,7 @@ def run_worker(args, timeout, quiet=False):
                 if line.startswith(("##DONE", "##FAIL")):
                     return True
             elif not quiet:
-                info("  " + line if line.strip() else "")
+                info(" " + line if line.strip() else "")
         return False
 
     while time.time() < deadline:
@@ -241,7 +190,7 @@ def run_worker(args, timeout, quiet=False):
             return markers
         if time.time() > grace and not worker_alive():
             time.sleep(0.5)
-            if drain():                      # вдруг успел дописать перед выходом
+            if drain():  # вдруг успел дописать перед выходом
                 return markers
             markers.append("##DIED")
             return markers
@@ -250,58 +199,41 @@ def run_worker(args, timeout, quiet=False):
     markers.append("##FAIL Устройство не ответило вовремя.")
     return markers
 
-
 def marker_error(markers):
     for m in markers:
         if m.startswith("##FAIL"):
             return m[len("##FAIL"):].strip() or "неизвестная причина"
     return None
 
-
 def died(markers):
     return any(m.startswith("##DIED") for m in markers)
 
-
 def bluetooth_access():
-    """Добивается разрешения на Bluetooth. Первый раз macOS показывает вопрос
-    и одновременно убивает спросившую программу — это нормально, надо просто
-    ответить и повторить."""
+    """Проверяет, что радио доступно. На Linux система не показывает вопросов
+    про Bluetooth — вместо этого мешать могут выключенный адаптер, rfkill
+    или незапущенный BlueZ."""
     title("Шаг 2. Доступ к Bluetooth")
-    info("Проверяю, разрешено ли программе пользоваться Bluetooth.")
+    info("Проверяю, видит ли система Bluetooth-адаптер.")
     markers = run_worker(["ping"], timeout=40, quiet=True)
 
     if not died(markers) and not marker_error(markers):
         ok("Доступ есть.")
         return True
 
+    fail("Сканировать эфир пока не получается.")
+    info("На Linux это почти всегда одно из четырёх:")
     info()
-    warn("macOS сейчас показала окно с вопросом про Bluetooth.")
-    info("Выглядит так:")
+    info("  • адаптер выключен программно. Включите его:")
+    info("        rfkill unblock bluetooth")
+    info("        bluetoothctl power on")
+    info("  • не запущена служба BlueZ:")
+    info("        sudo systemctl start bluetooth")
+    info("  • адаптер занят другим приложением — закройте его;")
+    info("  • Bluetooth-адаптера в компьютере нет или он вынут.")
     info()
-    info('    Приложение «BLEBridge.app» запрашивает разрешение')
-    info("    использовать Bluetooth.        [Не разрешать] [Разрешить]")
-    info()
-    info(f"{B}Нажмите «Разрешить».{OFF} Без этого macOS не пустит программу к радио,")
-    info("и найти устройство будет нечем. Окно могло уехать за другие окна —")
-    info("поищите его, оно небольшое, по центру экрана.")
-    if not ask("Нажали «Разрешить»?"):
-        info()
-        info("Ничего страшного. Разрешение можно выдать и позже вручную:")
-        info("Системные настройки → Конфиденциальность и безопасность → Bluetooth.")
-        return False
-
-    info("\nПроверяю ещё раз…")
-    markers = run_worker(["ping"], timeout=40, quiet=True)
-    if not died(markers) and not marker_error(markers):
-        ok("Доступ есть.")
-        return True
-
-    fail("Похоже, разрешение всё-таки не выдано.")
-    info("Откройте: Системные настройки → Конфиденциальность и безопасность →")
-    info("Bluetooth, найдите там BLEBridge и включите переключатель.")
-    info("Потом запустите эту программу заново.")
+    info("Подробности ошибки — в файле worker_log.txt рядом с программой.")
+    info("Исправьте причину и запустите программу заново.")
     return False
-
 
 # ── шаги мастера ────────────────────────────────────────────────────────────
 
@@ -339,7 +271,6 @@ def pick_firmware():
             return pick_firmware()
     return path
 
-
 def find_device():
     title("Шаг 4. Поиск устройства")
     info("Сейчас поищу адаптер по Bluetooth. Перед этим убедитесь:")
@@ -352,9 +283,9 @@ def find_device():
 
     markers = run_worker(["scan"], timeout=90)
     if died(markers):
-        fail("Программа потеряла доступ к Bluetooth.")
-        info("Выдайте разрешение вручную: Системные настройки →")
-        info("Конфиденциальность и безопасность → Bluetooth → BLEBridge.")
+        fail("Программа потеряла связь с Bluetooth-подсистемой.")
+        info("Проверьте, что служба запущена: sudo systemctl start bluetooth,")
+        info("и что адаптер не заблокирован: rfkill list.")
         return None
     err = marker_error(markers)
     if err:
@@ -377,13 +308,12 @@ def find_device():
         return addr if ask("Это он? Заливаем в него?") else None
 
     return choose("Нашлось несколько. В какое заливать?",
-                  [(f"{n}   {a}", a) for a, n in found] + [("Ни в какое", None)])
-
+                  [(f"{n}  {a}", a) for a, n in found] + [("Ни в какое", None)])
 
 def confirm_flash(path, name_hint):
     title("Шаг 5. Последняя проверка")
-    info(f"Файл прошивки:  {B}{os.path.basename(path)}{OFF}")
-    info(f"Размер файла:   {os.path.getsize(path) // 1024} КБ")
+    info(f"Файл прошивки: {B}{os.path.basename(path)}{OFF}")
+    info(f"Размер файла:  {os.path.getsize(path) // 1024} КБ")
     info()
     warn("Дальше начнётся запись. Что важно знать:")
     info()
@@ -395,7 +325,6 @@ def confirm_flash(path, name_hint):
     info("  • после обновления пароль устройства станет восемь нулей.")
     return ask("Начинаем запись?", default_yes=False)
 
-
 def main():
     os.system("")  # включает цвета в некоторых терминалах
     print()
@@ -406,8 +335,9 @@ def main():
     info("и вернуть заводскую китайскую. На каждом шаге будет спрашивать согласие,")
     info("так что просто читайте и отвечайте.")
 
-    if sys.platform != "darwin":
-        bye("Программа рассчитана на macOS.", 1)
+    if not sys.platform.startswith("linux"):
+        bye("Эта версия рассчитана на Linux. Для macOS — оригинал: "
+            "github.com/OllyCat/gbt-p6-flasher", 1)
     if not os.path.exists(WORKER):
         bye("Рядом нет файла ble_worker.py — распакуйте папку целиком.", 1)
 
@@ -449,7 +379,6 @@ def main():
     info("После этого на экране появится новая заставка.")
     info("Пароль устройства сброшен на восемь нулей: 00000000")
     bye("Готово. Спасибо!")
-
 
 if __name__ == "__main__":
     try:

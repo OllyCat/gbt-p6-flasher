@@ -1,21 +1,23 @@
 #!/usr/bin/env python3
-"""Bluetooth-часть прошивальщика. Отдельный файл потому, что запускать его
-приходится внутри .app-обёртки: macOS не пускает к радио процесс, у которого
-в Info.plist нет NSBluetoothAlwaysUsageDescription.
+"""Bluetooth-часть прошивальщика, порт на Linux.
 
-Запускается не человеком, а мастером (flasher.py):
+Отдельный файл потому, что на macOS его приходилось запускать внутри
+.app-обёртки. На Linux обёртка не нужна: мастер (flasher.py) запускает этот
+файл напрямую в питоне из .venv, а bleak разговаривает с BlueZ по D-Bus.
 
-    worker.py ping                            проверка доступа к Bluetooth
-    worker.py scan
-    worker.py flash <файл.hex> <адрес устройства>
+Запускается не человеком, а мастером:
 
-Вывод `open` отвязывает от терминала, поэтому всё пишется в worker_log.txt
-рядом с этим файлом. Строки, начинающиеся с ##, мастер разбирает сам:
+    ble_worker.py ping                     проверка доступа к Bluetooth
+    ble_worker.py scan
+    ble_worker.py flash <файл.hex> <адрес устройства>
 
-    ##FOUND <адрес>\t<имя>     найдено устройство
-    ##INFO  <чип>\t<блок>      сведения о микросхеме
-    ##DONE                     всё получилось
-    ##FAIL  <причина>          не получилось
+Вывод пишется в worker_log.txt рядом с этим файлом. Строки, начинающиеся
+с ##, мастер разбирает сам:
+
+    ##FOUND <адрес>\t<имя>      найдено устройство
+    ##INFO <чип>\t<блок>        сведения о микросхеме
+    ##DONE                      всё получилось
+    ##FAIL <причина>            не получилось
 """
 import asyncio
 import os
@@ -37,10 +39,8 @@ ADDRESS_BASE = 16
 CHIPS = {(0x83, 0x00): "CH583", (0x08, 0x02): "CH32V208", (0x08, 0xF2): "CH32F208",
          (0x79, 0x00): "CH579", (0x73, 0x00): "CH573", (0x92, 0x00): "CH592"}
 
-
 def say(msg):
     LOG.write(msg + "\n")
-
 
 def parse_hex(path):
     """Intel HEX -> (начальный адрес, сплошной массив байт)."""
@@ -68,12 +68,10 @@ def parse_hex(path):
         buf[a - lo] = v
     return lo, bytes(buf)
 
-
 def cmd_fixed(code):
     b = bytearray(IAP_LEN)
     b[0], b[1] = code, IAP_LEN - 2
     return bytes(b)
-
 
 def cmd_erase(addr, blocks):
     b = bytearray(IAP_LEN)
@@ -83,7 +81,6 @@ def cmd_erase(addr, blocks):
     b[4], b[5] = blocks & 0xFF, (blocks >> 8) & 0xFF
     return bytes(b)
 
-
 def cmd_data(code, addr, payload, data_len):
     b = bytearray(data_len)
     b[0], b[1] = code, data_len - 4
@@ -91,7 +88,6 @@ def cmd_data(code, addr, payload, data_len):
     b[2], b[3] = a & 0xFF, (a >> 8) & 0xFF
     b[4:4 + len(payload)] = payload
     return bytes(b)
-
 
 async def read_until(client, timeout):
     """Ответ появляется в характеристике не сразу — опрашиваем до таймаута."""
@@ -104,22 +100,18 @@ async def read_until(client, timeout):
             return b""
         await asyncio.sleep(0.2)
 
-
 async def xfer(client, packet, timeout=3.0):
     await client.write_gatt_char(CH_OTA, packet, response=True)
     return await read_until(client, timeout)
 
-
 async def do_ping():
-    """Короткое касание радио: нужно только чтобы macOS задала свой вопрос
-    про Bluetooth. Первый раз система убивает процесс прямо здесь."""
+    """Короткое касание радио: проверяет, что сканер BlueZ вообще заводится."""
     say("Проверяю доступ к Bluetooth…")
     scanner = BleakScanner()
     await scanner.start()
     await asyncio.sleep(2)
     await scanner.stop()
     say("##DONE")
-
 
 async def do_scan():
     say("Ищу устройства в эфире, это занимает около 15 секунд…")
@@ -142,9 +134,8 @@ async def do_scan():
         say("Подходящих устройств не видно.")
         say("Рядом было видно вот что (для справки):")
         for addr, name in list(found.items())[:15]:
-            say(f"    {name}")
+            say(f"  {name}")
     say("##DONE")
-
 
 async def do_flash(hex_path, address):
     start, image = parse_hex(hex_path)
@@ -208,22 +199,21 @@ async def do_flash(hex_path, address):
                 pct = pos * 100 // len(image)
                 if pct != last and pct % 10 == 0:
                     bar = "█" * (pct // 10) + "·" * (10 - pct // 10)
-                    say(f"    [{bar}] {pct}%")
+                    say(f"  [{bar}] {pct}%")
                     last = pct
             r = await read_until(client, 30.0)
             if not r or r[0] != 0:
                 say(f"##FAIL Не прошёл шаг «{phase.lower()}». "
                     f"Повторите заливку, устройство сейчас без рабочей прошивки.")
                 return
-            say(f"    готово за {time.time() - t:.0f} секунд")
+            say(f"  готово за {time.time() - t:.0f} секунд")
 
         await xfer(client, cmd_fixed(CMD_END), 10.0)
         say("")
         say("##DONE")
 
-
 def main():
-    args = [a for a in sys.argv[1:] if not a.startswith("-psn")]
+    args = sys.argv[1:]
     if not args:
         say("##FAIL Не сказано, что делать.")
         return
@@ -239,7 +229,9 @@ def main():
     except SystemExit as e:
         say(f"##FAIL {e}")
     except Exception as e:
-        say(f"##FAIL {type(e).__name__}: {e}")
-
+        msg = f"{type(e).__name__}: {e}"
+        if "DBus" in msg or "org.bluez" in msg:
+            msg += " (похоже, не запущен BlueZ: sudo systemctl start bluetooth)"
+        say(f"##FAIL {msg}")
 
 main()
